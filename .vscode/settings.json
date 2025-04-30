@@ -4,6 +4,7 @@
         "loramodule_sender": "cpp",
         "lora_receiver": "cpp",
         "4pmwater": "cpp",
-        "iot_water_withdisplayssd1306": "cpp"
+        "iot_water_withdisplayssd1306": "cpp",
+        "trail_capture_cam": "cpp"
     }
 }
