@@ -1,5 +1,7 @@
 #include <LoRa.h>
 #include <HardwareSerial.h>
+#include <modbusmaster.h>
+#include <SPI.h>
 
 // RS485 Configuration
 #define RS485_RX_PIN 16
@@ -19,6 +21,11 @@ HardwareSerial rs485(2); // Use UART2
 #define MODBUS_VOLTAGE_R_ADDR 0x5037
 #define MODBUS_VOLTAGE_Y_ADDR 0x5038
 #define MODBUS_VOLTAGE_B_ADDR 0x5039
+
+// Define named constants for magic numbers
+#define SLAVE_ID 0x01
+#define RELAY_ON_VALUE 0x50
+#define TRANSMISSION_INTERVAL 10000
 
 #pragma pack(push, 1)
 struct MeterData {
@@ -106,8 +113,8 @@ bool readModbus(uint8_t slaveID, uint16_t addr, uint16_t regs, uint16_t *result)
 }
 
 void sendRelayCommand(bool state) {
-  uint8_t cmd[10] = {0x13, 0x00, 0x02, 0x00, 0x01, 0x02, 
-                    state ? 0x50 : 0x00, state ? 0x50 : 0x00, 0x00, 0x00};
+  uint8_t cmd[10] = {SLAVE_ID, 0x00, 0x02, 0x00, 0x01, 0x02, 
+                    state ? RELAY_ON_VALUE : 0x00, state ? RELAY_ON_VALUE : 0x00, 0x00, 0x00};
   uint16_t crc = modbusCRC(cmd, 8);
   cmd[8] = lowByte(crc);
   cmd[9] = highByte(crc);
@@ -119,7 +126,7 @@ void sendRelayCommand(bool state) {
 }
 
 unsigned long previousMillis = 0;
-const unsigned long interval = 10000;
+const unsigned long interval = TRANSMISSION_INTERVAL;
 
 void loop() {
   unsigned long currentMillis = millis();
@@ -130,15 +137,15 @@ void loop() {
     MeterData data;
     uint16_t regValue;
 
-    if (readModbus(0x13, MODBUS_BALANCE_ADDR, 1, &regValue)) {
+    if (readModbus(SLAVE_ID, MODBUS_BALANCE_ADDR, 1, &regValue)) {
       data.balance = regValue;
       if (data.balance == 0) sendRelayCommand(false);
     }
 
     // Read other parameters and send via LoRa
-    if (readModbus(0x13, MODBUS_VOLTAGE_R_ADDR, 1, &regValue)) data.voltageR = regValue / 10.0;
-    if (readModbus(0x13, MODBUS_VOLTAGE_Y_ADDR, 1, &regValue)) data.voltageY = regValue / 10.0;
-    if (readModbus(0x13, MODBUS_VOLTAGE_B_ADDR, 1, &regValue)) data.voltageB = regValue / 10.0;
+    if (readModbus(SLAVE_ID, MODBUS_VOLTAGE_R_ADDR, 1, &regValue)) data.voltageR = regValue / 10.0;
+    if (readModbus(SLAVE_ID, MODBUS_VOLTAGE_Y_ADDR, 1, &regValue)) data.voltageY = regValue / 10.0;
+    if (readModbus(SLAVE_ID, MODBUS_VOLTAGE_B_ADDR, 1, &regValue)) data.voltageB = regValue / 10.0;
 
     LoRa.beginPacket();
     LoRa.write((uint8_t*)&data, sizeof(data));
