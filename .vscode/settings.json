@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "esp32code_1": "cpp",
+        "loramodule_sender": "cpp",
+        "lora_receiver": "cpp",
+        "4pmwater": "cpp",
+        "iot_water_withdisplayssd1306": "cpp"
+    }
+}

@@ -1,0 +1,76 @@
+#include <LoRa.h>
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+
+// Pin definitions for the LoRa module
+#define SS 5
+#define RST 14
+#define DIO0 2
+
+// LoRa frequency (adjust based on your region)
+#define LORA_FREQUENCY 433E6 // Ensure this matches the sender
+
+// Blynk and WiFi credentials
+char auth[33];
+char ssid[33];
+char pass[33];
+
+void setup() {
+  Serial.begin(115200);
+
+  // Input credentials via Serial
+  Serial.println("Enter Blynk Auth Token:");
+  while (Serial.available() == 0) {}
+  Serial.readBytesUntil('\n', auth, sizeof(auth));
+
+  Serial.println("Enter WiFi SSID:");
+  while (Serial.available() == 0) {}
+  Serial.readBytesUntil('\n', ssid, sizeof(ssid));
+
+  Serial.println("Enter WiFi Password:");
+  while (Serial.available() == 0) {}
+  Serial.readBytesUntil('\n', pass, sizeof(pass));
+
+  // Initialize LoRa
+  Serial.println("Initializing LoRa...");
+  LoRa.setPins(SS, RST, DIO0);
+  if (!LoRa.begin(LORA_FREQUENCY)) {
+    Serial.println("LoRa initialization failed. Check connections.");
+    while (1);
+  }
+  Serial.println("LoRa initialized.");
+
+  // Connect to WiFi
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, pass);
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nFailed to connect to WiFi. Restarting...");
+    ESP.restart();
+  }
+  Serial.println("\nWiFi connected.");
+
+  // Initialize Blynk
+  Blynk.begin(auth, ssid, pass);
+  Serial.println("Blynk initialized.");
+}
+
+void loop() {
+  Blynk.run(); // Keep Blynk connection alive
+
+  if (LoRa.parsePacket()) { // Check for incoming LoRa packets
+    String received = LoRa.readString(); // Read the packet
+    if (received.length() > 0 && received.toInt() > 0) {
+      int distance = received.toInt(); // Convert to integer
+      Blynk.virtualWrite(V1, distance); // Send to Blynk virtual pin V1
+      Serial.print("Received distance: ");
+      Serial.println(distance);
+    } else {
+      Serial.println("Invalid data received. Check sender or LoRa signal.");
+    }
+  }
+}

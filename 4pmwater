@@ -1,0 +1,223 @@
+#include <WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <Preferences.h>
+#include <SoftwareSerial.h>
+
+// Pin Definitions
+#define RELAY_PIN 12      // Controls water motor
+#define VALVE1_PIN 14     // Normally closed valve
+#define VALVE2_PIN 27     // Normally open valve
+#define FLOW_SENSOR_PIN 34
+
+// LoRa Module Settings (UART)
+SoftwareSerial loraSerial(16, 17); // RX, TX
+
+// Flow Sensor Variables
+volatile unsigned long pulseCount = 0;
+float flowRate = 0.0;
+const float calibrationFactor = 4.5; // Pulses per second per L/min
+unsigned long lastFlowCheck = 0;
+const unsigned long flowInterval = 1000;
+
+// System State Variables
+bool motorRunning = false;
+bool tankFull = false;
+unsigned long lowFlowStart = 0;
+unsigned long retryTime = 0;
+const float flowThreshold = 0.1; // 0.1 L/min minimum flow
+
+// Time Management
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "in.pool.ntp.org", 19800, 60000); // GMT+5:30
+
+Preferences preferences;
+
+void IRAM_ATTR pulseCounter() {
+  static unsigned long lastPulseTime = 0;
+  unsigned long currentTime = millis();
+  if (currentTime - lastPulseTime > 10) { // 10 ms debounce
+    pulseCount++;
+    lastPulseTime = currentTime;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  loraSerial.begin(9600);
+  
+  // Initialize GPIO
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(VALVE1_PIN, OUTPUT);
+  pinMode(VALVE2_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+  closeValve1();
+  openValve2();
+
+  // Flow Sensor Interrupt
+  pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), pulseCounter, FALLING);
+
+  // WiFi Configuration
+  connectToWiFi();
+
+  // NTP Client
+  timeClient.begin();
+  timeClient.forceUpdate();
+}
+
+void connectToWiFi() {
+  Serial.println("Scanning for available WiFi networks...");
+  int networkCount = WiFi.scanNetworks();
+
+  if (networkCount == 0) {
+    Serial.println("No WiFi networks found. Restarting...");
+    delay(5000);
+    ESP.restart();
+  } else {
+    Serial.println("Available WiFi networks:");
+    for (int i = 0; i < networkCount; i++) {
+      Serial.printf("%d: %s (Signal: %d dBm)\n", i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i));
+    }
+
+    Serial.println("Enter the number of the WiFi network you want to connect to:");
+    while (Serial.available() == 0) {}
+    int selectedNetwork = Serial.parseInt() - 1;
+
+    if (selectedNetwork < 0 || selectedNetwork >= networkCount) {
+      Serial.println("Invalid selection. Restarting...");
+      delay(5000);
+      ESP.restart();
+    }
+
+    String selectedSSID = WiFi.SSID(selectedNetwork);
+    Serial.printf("Selected network: %s\n", selectedSSID.c_str());
+
+    Serial.println("Enter WiFi password:");
+    while (Serial.available() == 0) {}
+    String password = Serial.readStringUntil('\n');
+    password.trim();
+
+    Serial.printf("Connecting to %s...\n", selectedSSID.c_str());
+    WiFi.begin(selectedSSID.c_str(), password.c_str());
+
+    unsigned long startAttemptTime = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
+      delay(500);
+      Serial.print(".");
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("\nFailed to connect to WiFi. Entering fallback mode.");
+      while (true) {
+        delay(1000);
+        Serial.println("Waiting for manual reset...");
+      }
+    }
+
+    Serial.println("\nWiFi connected.");
+    Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+  }
+}
+
+void loop() {
+  timeClient.update();
+  checkSchedule();
+  checkFlowRate();
+  checkLORA();
+  handleRetries();
+  resetTankFull();
+}
+
+void checkSchedule() {
+  int currentHour = timeClient.getHours();
+  int currentMinute = timeClient.getMinutes();
+
+  // Daily schedule check
+  int startHour = preferences.getInt("startHour", 16);
+  int stopHour = preferences.getInt("stopHour", 17);
+
+  if (!tankFull && currentHour == startHour && currentMinute == 0 && !motorRunning) {
+    startSystem();
+  }
+
+  // Evening shutdown
+  if (currentHour == stopHour && currentMinute == 0) {
+    stopSystem();
+    tankFull = false;
+  }
+}
+
+void startSystem() {
+  digitalWrite(RELAY_PIN, HIGH);
+  openValve1();
+  closeValve2();
+  motorRunning = true;
+  lowFlowStart = 0;
+}
+
+void stopSystem() {
+  digitalWrite(RELAY_PIN, LOW);
+  closeValve1();
+  openValve2();
+  motorRunning = false;
+}
+
+void checkFlowRate() {
+  if (millis() - lastFlowCheck >= flowInterval && motorRunning) {
+    noInterrupts();
+    flowRate = ((1000.0 / (millis() - lastFlowCheck)) * pulseCount) / calibrationFactor;
+    pulseCount = 0;
+    lastFlowCheck = millis();
+    interrupts();
+
+    if (flowRate < flowThreshold) {
+      if (lowFlowStart == 0) lowFlowStart = millis();
+      if (millis() - lowFlowStart > 30000) handleLowFlow();
+    } else {
+      lowFlowStart = 0;
+    }
+  }
+}
+
+void handleLowFlow() {
+  Serial.println("Low flow detected. Stopping system and retrying in 1 minute.");
+  stopSystem();
+  retryTime = millis() + 60000; // Retry after 1 minute
+  lowFlowStart = 0;
+}
+
+void handleRetries() {
+  if (retryTime != 0 && millis() >= retryTime) {
+    if (!tankFull && motorRunning == false) {
+      startSystem();
+    }
+    retryTime = 0;
+  }
+}
+
+void checkLORA() {
+  if (loraSerial.available()) {
+    String msg = loraSerial.readStringUntil('\n');
+    msg.trim();
+    if (msg == "TANK_FULL") {
+      tankFull = true;
+      closeValve1();
+      openValve2();
+    } else {
+      Serial.print("Unknown LoRa message: ");
+      Serial.println(msg);
+    }
+  }
+}
+
+void resetTankFull() {
+  if (timeClient.getHours() == 18) { // Example: Reset at 6 PM
+    tankFull = false;
+  }
+}
+
+void openValve1() { digitalWrite(VALVE1_PIN, HIGH); }
+void closeValve1() { digitalWrite(VALVE1_PIN, LOW); }
+void openValve2() { digitalWrite(VALVE2_PIN, HIGH); }
+void closeValve2() { digitalWrite(VALVE2_PIN, LOW); }

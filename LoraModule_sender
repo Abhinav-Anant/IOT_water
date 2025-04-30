@@ -1,0 +1,52 @@
+#include <NewPing.h>
+#include <LoRa.h>
+
+// Pin definitions for the ultrasonic sensor
+#define TRIGGER_PIN 4
+#define ECHO_PIN 16
+#define MAX_DISTANCE 200 // Maximum distance in cm (adjust based on tank height)
+
+// Pin definitions for the LoRa module
+#define SS 5
+#define RST 14
+#define DIO0 2
+
+// LoRa frequency (adjust based on your region)
+#define LORA_FREQUENCY 433E6 // Ensure this matches the receiver
+
+NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE);
+
+unsigned long previousMillis = 0;
+const long interval = 10000; // 10 seconds
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Initializing LoRa Sender...");
+
+  // Initialize LoRa with specified pins
+  LoRa.setPins(SS, RST, DIO0);
+  if (!LoRa.begin(LORA_FREQUENCY)) {
+    Serial.println("LoRa initialization failed. Check connections.");
+    while (1); // Halt if LoRa fails to start
+  }
+  Serial.println("LoRa Sender Initialized.");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+
+    int distance = sonar.ping_cm(); // Measure distance in cm
+    if (distance > 0) {
+      LoRa.beginPacket(); // Start a LoRa packet
+      LoRa.print(distance); // Send the distance value
+      LoRa.endPacket(); // End and transmit the packet
+      Serial.print("Distance sent: ");
+      Serial.print(distance);
+      Serial.println(" cm");
+    } else {
+      Serial.println("Error: No valid distance detected.");
+    }
+  }
+}

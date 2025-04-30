@@ -3,8 +3,8 @@
 #include <time.h>
 
 // WiFi credentials
-const char* ssid = "LOTUSSCHOOL";
-const char* password = "PASSWORD";
+String ssid;
+String password;
 
 // Pin definitions (adjust these to match your hardware)
 const int relayMotorPin = 26;  // Motor relay pin
@@ -21,7 +21,7 @@ unsigned long oldTime = 0;
 const float calibrationFactor = 4.5; // Adjust based on your flow sensor
 
 // Time zone settings (adjust these for your local time)
-const long gmtOffset_sec = 0;      // For UTC; e.g., use 19800 for UTC+5:30 (India)
+const long gmtOffset_sec = 19800;      // For UTC; e.g., use 19800 for UTC+5:30 (India)
 const int daylightOffset_sec = 0;  // Set to 3600 if your region uses daylight saving
 
 unsigned long previousMillis = 0;
@@ -34,6 +34,8 @@ void performFilling();
 void calculateFlowRate();
 float measureDistance();
 void IRAM_ATTR flowPulseCounter();
+void connectToWiFi();
+void syncTime();
 
 void setup() {
   Serial.begin(115200);
@@ -53,29 +55,10 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(flowSensorPin), flowPulseCounter, RISING);
 
   // Connect to WiFi
-  Serial.println("Connecting to WiFi...");
-  WiFi.begin(ssid, password);
-  unsigned long startAttemptTime = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
-    delay(1000);
-    Serial.println("Waiting for WiFi connection...");
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Failed to connect to WiFi. Restarting...");
-    ESP.restart();
-  }
-  Serial.println("Connected to WiFi");
+  connectToWiFi();
 
-  // Configure time with NTP server
-  configTime(gmtOffset_sec, daylightOffset_sec, "pool.ntp.org");
-
-  // Wait for time synchronization
-  struct tm timeinfo;
-  while (!getLocalTime(&timeinfo)) {
-    delay(1000);
-    Serial.println("Waiting for time sync...");
-  }
-  Serial.println("Time synchronized");
+  // Synchronize time
+  syncTime();
 }
 
 void loop() {
@@ -196,9 +179,54 @@ float measureDistance() {
 
 // Interrupt service routine for flow sensor pulses
 void IRAM_ATTR flowPulseCounter() {
-    unsigned long currentTime = millis();
-    if (currentTime - lastPulseTime > 10) { // 10 ms debounce
-        flowPulseCount++;
-        lastPulseTime = currentTime;
-    }
+  unsigned long currentTime = millis();
+  if (currentTime - lastPulseTime > 10) { // 10 ms debounce
+    flowPulseCount++;
+    lastPulseTime = currentTime;
+  }
+}
+
+// Connect to WiFi with user input
+void connectToWiFi() {
+  Serial.println("Enter WiFi SSID:");
+  while (Serial.available() == 0) {}
+  ssid = Serial.readStringUntil('\n');
+  ssid.trim();
+
+  Serial.println("Enter WiFi Password:");
+  while (Serial.available() == 0) {}
+  password = Serial.readStringUntil('\n');
+  password.trim();
+
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid.c_str(), password.c_str());
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
+    delay(1000);
+    Serial.println("Waiting for WiFi connection...");
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Failed to connect to WiFi. Retrying in 5 minutes...");
+    delay(300000); // Retry after 5 minutes
+    ESP.restart();
+  }
+  Serial.println("Connected to WiFi");
+}
+
+// Synchronize time with NTP server
+void syncTime() {
+  configTime(gmtOffset_sec, daylightOffset_sec, "pool.ntp.org");
+
+  // Wait for time synchronization
+  struct tm timeinfo;
+  unsigned long startSyncTime = millis();
+  while (!getLocalTime(&timeinfo) && millis() - startSyncTime < 30000) {
+    delay(1000);
+    Serial.println("Waiting for time sync...");
+  }
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to synchronize time. Proceeding without time sync...");
+  } else {
+    Serial.println("Time synchronized");
+  }
 }
