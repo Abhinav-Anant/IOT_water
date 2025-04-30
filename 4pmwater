@@ -26,6 +26,8 @@ bool tankFull = false;
 unsigned long lowFlowStart = 0;
 unsigned long retryTime = 0;
 const float flowThreshold = 0.1; // 0.1 L/min minimum flow
+const unsigned long MAX_MOTOR_RUNTIME = 3600000; // 1 hour
+unsigned long motorStartTime = 0;
 
 // Time Management
 WiFiUDP ntpUDP;
@@ -129,6 +131,9 @@ void loop() {
   checkLORA();
   handleRetries();
   resetTankFull();
+  if (motorRunning && millis() - motorStartTime > MAX_MOTOR_RUNTIME) {
+    stopSystem();
+  }
 }
 
 void checkSchedule() {
@@ -156,6 +161,7 @@ void startSystem() {
   closeValve2();
   motorRunning = true;
   lowFlowStart = 0;
+  motorStartTime = millis();
 }
 
 void stopSystem() {
@@ -207,7 +213,8 @@ void checkLORA() {
   if (loraSerial.available()) {
     String msg = loraSerial.readStringUntil('\n');
     msg.trim();
-    if (msg == "TANK_FULL") {
+    if (msg.equals("TANK_FULL")) { // Use equals() for String comparison
+      // Handle tank full
       tankFull = true;
       closeValve1();
       openValve2();

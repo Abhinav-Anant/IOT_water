@@ -17,6 +17,8 @@ const float TANK_FULL_THRESHOLD = 30.0; // Adjust based on your tank height
 float measureDistance();
 void sendTankFullMessage();
 
+static unsigned long lastMessageTime = 0;
+
 void setup() {
   Serial.begin(115200);
 
@@ -28,8 +30,9 @@ void setup() {
   Serial.println("Initializing LoRa...");
   LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
   if (!LoRa.begin(LORA_FREQUENCY)) {
-    Serial.println("LoRa initialization failed. Check connections.");
-    while (1);
+    Serial.println("LoRa init failed. Retrying...");
+    delay(5000);
+    ESP.restart(); // Consider restarting after multiple failures
   }
   Serial.println("LoRa initialized.");
 }
@@ -42,10 +45,9 @@ void loop() {
   Serial.println(" cm");
 
   // Check if the tank is full
-  if (distance <= TANK_FULL_THRESHOLD) {
-    Serial.println("Tank is full. Sending TANK_FULL message...");
+  if (distance <= TANK_FULL_THRESHOLD && millis() - lastMessageTime > 60000) {
     sendTankFullMessage();
-    delay(10000); // Avoid sending the message repeatedly
+    lastMessageTime = millis();
   }
 
   delay(1000); // Measure every second
