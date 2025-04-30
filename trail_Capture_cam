@@ -1,3 +1,6 @@
+
+#pragma once
+#include <Arduino.h>
 #include "LoRa.h"
 #include "esp_camera.h"
 #include "FS.h"
@@ -8,130 +11,85 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 
-// Configuration Constants
-#define RADAR_RX 16
-#define RADAR_TX 17
-#define LORA_SCK 18
-#define LORA_MISO 19
-#define LORA_MOSI 23
-#define LORA_SS 5
-#define LORA_RST 25
-#define LORA_DI0 26
+namespace App {
+    namespace Config {
+        // Hardware pin configuration
+        constexpr uint8_t RADAR_RX = 16;
+        constexpr uint8_t RADAR_TX = 17;
+        
+        // LoRa parameters (FCC compliant)
+        constexpr uint8_t LORA_SCK = 18;
+        constexpr uint8_t LORA_MISO = 19;
+        constexpr uint8_t LORA_MOSI = 23;
+        constexpr uint8_t LORA_SS = 5;
+        constexpr uint8_t LORA_RST = 25;
+        constexpr uint8_t LORA_DI0 = 26;
+        constexpr long LORA_FREQ = 915E6;
+        constexpr uint8_t LORA_SF = 7;
+        constexpr uint8_t LORA_CR = 5;
+        constexpr uint8_t LORA_BW = 125E3;
+        constexpr uint8_t LORA_SYNC_WORD = 0xF3;
 
-// FIX: Validated LoRa parameters
-#define LORA_FREQUENCY 915E6
-#define LORA_BW 125E3
-#define LORA_SF 7
-#define LORA_CR 5
-#define LORA_SYNC_WORD 0xF3
-#define MAX_PACKET_SIZE 240
+        // System timing constants
+        constexpr uint32_t WDT_TIMEOUT = 30;         // Watchdog timeout (seconds)
+        constexpr uint32_t INACTIVITY_TIMEOUT = 5*60*1000; // 5 minutes
+        constexpr uint16_t RADAR_TIMEOUT = 100;      // 100ms packet timeout
+        constexpr uint16_t COOLDOWN_PERIOD = 5000;   // 5 seconds
+        constexpr uint8_t MAX_RETRIES = 3;
+        constexpr uint16_t STATIONARY_THRESHOLD = 50;
+    }
 
-// FIX: Added watchdog timeout
-#define WDT_TIMEOUT 30
-#define INACTIVITY_TIMEOUT (5 * 60 * 1000)  // 5 minutes in milliseconds
-#define MAX_RETRY_COUNT 3
-#define STATIONARY_THRESHOLD 50
-#define COOLDOWN_PERIOD 5000
-#define SD_CLEANUP_THRESHOLD 90
-
-// FIX: Changed to static buffers for reliability
-static HardwareSerial radarSerial(2);
-static bool targetDetected = false;
-static unsigned long lastActivityTime = 0;
-RTC_DATA_ATTR static int bootCount = 0;
-
-// FIX: Added power management flags
-struct SystemStatus {
-    bool sdCardOk;
-    bool cameraOk;
-    bool loraOk;
-    bool radarOk;
-} static status;
-
-// FIX: File tracking structure
-struct FileRecord {
-    char name[32];
-    unsigned long timestamp;
-};
-
-// Error handling structure
-struct ErrorLog {
-    uint32_t timestamp;
-    uint8_t errorCode;
-    char message[64];
-};
-
-// Error codes
-enum ErrorCodes {
-    ERR_NONE = 0,
-    ERR_CAMERA_INIT = 1,
-    ERR_SD_CARD = 2,
-    ERR_LORA_INIT = 3,
-    ERR_RADAR_TIMEOUT = 4,
-    ERR_IMAGE_CAPTURE = 5,
-    ERR_TRANSMISSION = 6
-};
-
-void logError(uint8_t errorCode, const char* message) {
-    ErrorLog error = {
-        .timestamp = millis(),
-        .errorCode = errorCode
-    };
-    strncpy(error.message, message, sizeof(error.message) - 1);
-    
-    File errorLog = SD_MMC.open("/error_log.txt", FILE_APPEND);
-    if (errorLog) {
-        errorLog.printf("%lu,%d,%s\n", error.timestamp, error.errorCode, error.message);
-        errorLog.close();
+    // Shared system state
+    namespace State {
+        bool targetDetected = false;
+        unsigned long lastActivity = 0;
+        RTC_DATA_ATTR int bootCount = 0;
+        
+        struct {
+            bool sdCardInitialized : 1;
+            bool cameraInitialized : 1;
+            bool loraInitialized : 1;
+            bool radarInitialized : 1;
+        } status;
     }
 }
 
-// System Diagnostics Structure
-struct SystemDiagnostics {
-    uint32_t freeHeap;
-    uint32_t minFreeHeap;
-    float cpuTemperature;
-    uint64_t uptime;
-    uint32_t sdCardSpace;
-    uint16_t batteryVoltage;
-    uint8_t wifiStrength;
-    uint8_t loraRSSI;
-};
+// --------------------------------------------------
+// Error Handling Subsystem
+// --------------------------------------------------
+namespace Error {
+    enum class Code : uint8_t {
+        None = 0,
+        CameraInit,
+        SDCardMount,
+        LoRaInit,
+        RadarTimeout,
+        ImageCapture,
+        LoRaTx,
+        FileSystem,
+        SystemHealth
+    };
 
-// Diagnostics Function
-SystemDiagnostics getDiagnostics() {
-    SystemDiagnostics diag;
-    diag.freeHeap = esp_get_free_heap_size();
-    diag.minFreeHeap = esp_get_minimum_free_heap_size();
-    diag.cpuTemperature = temperatureRead();
-    diag.uptime = esp_timer_get_time() / 1000000ULL; // Convert to seconds
-    diag.sdCardSpace = (SD_MMC.totalBytes() - SD_MMC.usedBytes()) / 1024; // KB
-    diag.batteryVoltage = analogRead(BATTERY_PIN) * 2 * 3.3 / 4095; // Assuming voltage divider
-    diag.loraRSSI = LoRa.packetRssi();
-    
-    return diag;
-}
+    struct Record {
+        uint32_t timestamp;
+        Code code;
+        char context[48];
+    };
 
-// Add diagnostic logging
-void logDiagnostics() {
-    static unsigned long lastDiagnosticLog = 0;
-    const unsigned long DIAGNOSTIC_INTERVAL = 60000; // 1 minute
-    
-    if (millis() - lastDiagnosticLog >= DIAGNOSTIC_INTERVAL) {
-        SystemDiagnostics diag = getDiagnostics();
+    void log(Code code, const char* context = "") {
+        Record err {
+            .timestamp = millis(),
+            .code = code,
+        };
+        strlcpy(err.context, context, sizeof(err.context));
         
-        File logFile = SD_MMC.open("/system_log.txt", FILE_APPEND);
-        if (logFile) {
-            logFile.printf("%lu,%.2f,%u,%u,%d,%d\n",
-                          diag.uptime,
-                          diag.cpuTemperature,
-                          diag.freeHeap,
-                          diag.sdCardSpace,
-                          diag.batteryVoltage,
-                          diag.loraRSSI);
-            logFile.close();
+        if(SD_MMC.exists("/errors.log")) {
+            File log = SD_MMC.open("/errors.log", FILE_APPEND);
+            if(log) {
+                log.write(reinterpret_cast<uint8_t*>(&err), sizeof(err));
+                log.close();
+            }
         }
-        lastDiagnosticLog = millis();
     }
 }
 
@@ -140,207 +98,229 @@ void logDiagnostics() {
 // --------------------------------------------------
 bool initCamera() {
     camera_config_t config;
-    // ... (camera configuration)
-    return esp_camera_init(&config) == ESP_OK;
-}
-
-bool initLoRa() {
-    LoRa.setPins(LORA_SS, LORA_RST, LORA_DI0);
-    if (!LoRa.begin(LORA_FREQUENCY)) return false;
+    // Camera interface pins
+    config.pin_d0 = 5;   // Y2_GPIO_NUM
+    config.pin_d1 = 18;  // Y3_GPIO_NUM
+    config.pin_d2 = 19;  // Y4_GPIO_NUM
+    config.pin_d3 = 21;  // Y5_GPIO_NUM
+    config.pin_d4 = 36;  // Y6_GPIO_NUM
+    config.pin_d5 = 39;  // Y7_GPIO_NUM
+    config.pin_d6 = 34;  // Y8_GPIO_NUM
+    config.pin_d7 = 35;  // Y9_GPIO_NUM
+    config.pin_xclk = 0;
+    config.pin_pclk = 22;
+    config.pin_vsync = 25;
+    config.pin_href = 23;
+    config.pin_sccb_sda = 26;
+    config.pin_sccb_scl = 27;
+    config.pin_pwdn = 32;
+    config.pin_reset = -1; // Shared with LED FLASH
     
-    // FIX: Validated LoRa settings
-    LoRa.setSpreadingFactor(LORA_SF);
-    LoRa.setSignalBandwidth(LORA_BW);
-    LoRa.setCodingRate4(LORA_CR);
-    LoRa.setSyncWord(LORA_SYNC_WORD);
-    return true;
-}
-
-// --------------------------------------------------
-// Power Management
-// --------------------------------------------------
-void shutdownPeripherals() {
-    // FIX: Proper hardware deinitialization
-    esp_camera_deinit();
-    SD_MMC.end();
-    LoRa.end();
-    radarSerial.end();
-    rtc_gpio_isolate(GPIO_NUM_16);
-    rtc_gpio_isolate(GPIO_NUM_17);
-}
-
-// --------------------------------------------------
-// File Management
-// --------------------------------------------------
-bool capture_and_save(char* filename) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) return false;
-
-    // FIX: Static filename buffer
-    static char fn[32];
-    snprintf(fn, sizeof(fn), "/img_%llu.jpg", esp_timer_get_time());
+    // Camera settings
+    config.xclk_freq_hz = 20000000;  // 20MHz
+    config.ledc_channel = LEDC_CHANNEL_0;
+    config.ledc_timer = LEDC_TIMER_0;
+    config.pixel_format = PIXFORMAT_JPEG;
+    config.frame_size = FRAMESIZE_UXGA;  // 1600x1200
+    config.jpeg_quality = 12;  // 0-63 (higher = better)
+    config.fb_count = 2;  // Double buffer
     
-    File file = SD_MMC.open(fn, FILE_WRITE);
-    if (!file || file.write(fb->buf, fb->len) != fb->len) {
-        file.close();
-        esp_camera_fb_return(fb);
+    esp_err_t ret = esp_camera_init(&config);
+    if(ret != ESP_OK) {
+        Error::log(Error::Code::CameraInit, "Init failed");
         return false;
     }
-    
-    // FIX: Ensure write completion
-    file.sync();
-    file.close();
-    esp_camera_fb_return(fb);
-    
-    strncpy(filename, fn, 32);
+
+bool initLoRa() {
+    LoRa.setPins(App::Config::LORA_SS, 
+                App::Config::LORA_RST, 
+                App::Config::LORA_DI0);
+                
+    if(!LoRa.begin(App::Config::LORA_FREQ)) {
+        Error::log(Error::Code::LoRaInit, "Begin failed");
+        return false;
+    }
+
+    LoRa.setSpreadingFactor(App::Config::LORA_SF);
+    LoRa.setSignalBandwidth(App::Config::LORA_BW);
+    LoRa.setCodingRate4(App::Config::LORA_CR);
+    LoRa.setSyncWord(App::Config::LORA_SYNC_WORD);
     return true;
-}
-
-// FIX: Optimized SD cleanup using timestamp tracking
-void cleanupSDCard() {
-    if (!SD_MMC.totalBytes()) {
-        Serial.println("Failed to get SD card size");
-        return;
-    }
-
-    uint64_t totalBytes = SD_MMC.totalBytes();
-    uint64_t usedBytes = SD_MMC.usedBytes();
-    float usage = (float)usedBytes / totalBytes * 100;
-
-    Serial.printf("SD Card Usage: %.1f%%\n", usage);
-
-    if (usage > 90) {  // Cleanup threshold
-        File root = SD_MMC.open("/");
-        if (!root || !root.isDirectory()) {
-            Serial.println("Failed to open root directory");
-            return;
-        }
-
-        String oldestFile;
-        unsigned long oldestTime = ULONG_MAX;
-
-        File file = root.openNextFile();
-        while (file) {
-            if (!file.isDirectory()) {
-                unsigned long fileTime = file.getLastWrite();
-                if (fileTime < oldestTime) {
-                    oldestTime = fileTime;
-                    oldestFile = String(file.name());
-                }
-            }
-            file = root.openNextFile();
-        }
-
-        if (!oldestFile.isEmpty()) {
-            if (SD_MMC.remove(oldestFile.c_str())) {
-                Serial.printf("Removed old file: %s\n", oldestFile.c_str());
-            } else {
-                Serial.println("Failed to remove file");
-            }
-        }
-        root.close();
-    }
 }
 
 // --------------------------------------------------
 // Radar Processing
 // --------------------------------------------------
-void check_radar() {
-    static uint8_t radar_buffer[24];
-    static uint8_t buf_index = 0;
-    static unsigned long lastByteTime = 0;
-    static const uint16_t RADAR_TIMEOUT = 100;  // 100ms timeout
-
-    while (radarSerial.available()) {
-        unsigned long currentTime = millis();
-        if (currentTime - lastByteTime > RADAR_TIMEOUT) {
-            buf_index = 0;
-            Serial.println("Radar timeout - resetting buffer");
-        }
-        lastByteTime = currentTime;
-
-        radar_buffer[buf_index] = radarSerial.read();
-
-        // Improved header validation
-        if (buf_index == 0) {
-            if (radar_buffer[0] != 0xAA) {
-                Serial.println("Invalid header byte 1");
-                continue;
-            }
-        }
-        if (buf_index == 1) {
-            if (radar_buffer[1] != 0xFF) {
-                Serial.println("Invalid header byte 2");
-                buf_index = 0;
-                continue;
-            }
-        }
-
-        if (++buf_index >= 24) {
-            buf_index = 0;
-            if (validateRadarPacket(radar_buffer)) {
-                processRadarData(radar_buffer);
-            }
-        }
-    }
-}
-
-bool validateRadarPacket(const uint8_t* buffer) {
-    if (buffer[0] != 0xAA || buffer[1] != 0xFF) {
-        Serial.println("Invalid packet header");
-        return false;
-    }
-    
-    // Add checksum validation if applicable
-    return true;
-}
-
-void processRadarData(const uint8_t* buffer) {
-    uint16_t moving = (buffer[9] << 8) | buffer[10];
-    uint16_t stationary = (buffer[11] << 8) | buffer[12];
-    
-    Serial.printf("Moving: %d, Stationary: %d\n", moving, stationary);
-    targetDetected = (moving > 0 || stationary > STATIONARY_THRESHOLD);
-}
-
-// --------------------------------------------------
-// LoRa Transmission
-// --------------------------------------------------
-bool sendLoRaPacket(const uint8_t* data, size_t len) {
-    for (int retry = 0; retry < MAX_RETRY_COUNT; retry++) {
-        LoRa.beginPacket();
-        LoRa.write(data, len);
-        if (LoRa.endPacket()) {
-            // FIX: Use actual airtime calculation
-            delay(LoRa.getTimeOnAir(len) / 1000);
-            return true;
-        }
-        delay(100 + random(50));
-    }
-    return false;
-}
-
-// --------------------------------------------------
-// Main Application Logic
-// --------------------------------------------------
-void setup() {
-    esp_task_wdt_init(WDT_TIMEOUT, true);
-    Serial.begin(115200);
-    
-    // FIX: Boot loop prevention
-    if (bootCount++ > 3) {
-        esp_deep_sleep(60e6);
-    }
-
-    status = {
-        .sdCardOk = SD_MMC.begin("/sdcard", true),
-        .cameraOk = initCamera(),
-        .loraOk = initLoRa(),
-        .radarOk = radarSerial.begin(256000, SERIAL_8N1, RADAR_RX, RADAR_TX)
+namespace Radar {
+    struct Packet {
+        uint8_t header[2];
+        uint16_t moving;
+        uint16_t stationary;
+        uint8_t checksum;
     };
 
-    if (!status.sdCardOk || !status.cameraOk || !status.loraOk) {
-        delay(5000);  // Prevent boot loops
+    bool validatePacket(const uint8_t* data) {
+        // Improved checksum validation
+        uint8_t sum = 0;
+        for(int i=0; i<23; i++) sum += data[i];
+        return (sum == data[23]);
+    }
+
+    void process() {
+        static uint8_t buffer[24];
+        static uint8_t index = 0;
+        static uint32_t lastByteTime = 0;
+
+        while(radarSerial.available()) {
+            uint32_t now = millis();
+            
+            // Timeout handling
+            if(now - lastByteTime > App::Config::RADAR_TIMEOUT) {
+                index = 0;
+                Error::log(Error::Code::RadarTimeout, "Packet timeout");
+            }
+
+            buffer[index++] = radarSerial.read();
+            lastByteTime = now;
+
+            if(index >= sizeof(buffer)) {
+                index = 0;
+                if(validatePacket(buffer)) {
+                    Packet pkt = *reinterpret_cast<Packet*>(buffer);
+                    App::State::targetDetected = 
+                        (pkt.moving > 0) || 
+                        (pkt.stationary > App::Config::STATIONARY_THRESHOLD);
+                }
+            }
+        }
+    }
+}
+
+// --------------------------------------------------
+// Image Management
+// --------------------------------------------------
+namespace ImageSystem {
+    bool captureAndSave(String& filename) {
+        camera_fb_t* fb = esp_camera_fb_get();
+        if(!fb || fb->format != PIXFORMAT_JPEG) {
+            Error::log(Error::Code::ImageCapture, "Capture failed");
+            return false;
+        }
+
+        filename = String("/img/") + esp_timer_get_time() + ".jpg";
+        File file = SD_MMC.open(filename.c_str(), FILE_WRITE);
+        
+        if(!file || file.write(fb->buf, fb->len) != fb->len) {
+            Error::log(Error::Code::FileSystem, "Write failed");
+            file.close();
+            esp_camera_fb_return(fb);
+            return false;
+        }
+
+        file.close();
+        esp_camera_fb_return(fb);
+        return true;
+    }
+
+    void manageStorage() {
+        constexpr uint64_t MAX_STORAGE = 90'000'000; // 90MB
+        if(SD_MMC.usedBytes() > MAX_STORAGE) {
+            File root = SD_MMC.open("/img");
+            File file = root.openNextFile();
+            
+            // Delete oldest file
+            if(file && !file.isDirectory()) {
+                SD_MMC.remove(file.path());
+            }
+        }
+    }
+}
+
+// --------------------------------------------------
+// LoRa Communication
+// --------------------------------------------------
+namespace LoRaTx {
+    bool sendImage(const String& filename) {
+        File imgFile = SD_MMC.open(filename.c_str());
+        if(!imgFile) {
+            Error::log(Error::Code::FileSystem, "Open failed");
+            return false;
+        }
+
+        constexpr size_t CHUNK_SIZE = 220; // LoRa max payload
+        uint8_t buffer[CHUNK_SIZE];
+        size_t bytesRead;
+        uint16_t packetCount = 0;
+
+        do {
+            bytesRead = imgFile.read(buffer, CHUNK_SIZE);
+            if(bytesRead > 0) {
+                LoRa.beginPacket();
+                LoRa.write(buffer, bytesRead);
+                if(!LoRa.endPacket()) {
+                    Error::log(Error::Code::LoRaTx, "Packet failed");
+                    imgFile.close();
+                    return false;
+                }
+                packetCount++;
+            }
+        } while(bytesRead == CHUNK_SIZE);
+
+        imgFile.close();
+        return true;
+    }
+}
+
+// --------------------------------------------------
+// Power Management
+// --------------------------------------------------
+namespace Power {
+    void deepSleep() {
+        esp_camera_deinit();
+        SD_MMC.end();
+        LoRa.end();
+        radarSerial.end();
+        
+        // Isolate GPIOs
+        rtc_gpio_isolate(GPIO_NUM_16);
+        rtc_gpio_isolate(GPIO_NUM_17);
+        
+        esp_deep_sleep(App::Config::INACTIVITY_TIMEOUT * 1000);
+    }
+
+    void checkWatchdog() {
+        if(millis() - App::State::lastActivity > App::Config::WDT_TIMEOUT * 1000) {
+            ESP.restart();
+        }
+    }
+}
+
+// --------------------------------------------------
+// Main Application
+// --------------------------------------------------
+void setup() {
+    esp_task_wdt_init(App::Config::WDT_TIMEOUT, true);
+    Serial.begin(115200);
+    
+    // Boot count management
+    if(App::State::bootCount++ > 3) {
+        Power::deepSleep();
+    }
+
+    // Hardware initialization
+    App::State::status = {
+        .sdCardInitialized = SD_MMC.begin("/sdcard", true),
+        .cameraInitialized = initCamera(),
+        .loraInitialized = initLoRa(),
+        .radarInitialized = radarSerial.begin(256000, SERIAL_8N1, 
+                                            App::Config::RADAR_RX,
+                                            App::Config::RADAR_TX)
+    };
+
+    // Validate critical systems
+    if(!App::State::status.sdCardInitialized || 
+       !App::State::status.cameraInitialized) {
+        delay(5000);
         ESP.restart();
     }
 }
@@ -348,38 +328,26 @@ void setup() {
 void loop() {
     esp_task_wdt_reset();
     
-    // System diagnostics
-    logDiagnostics();
+    // Main processing flow
+    Radar::process();
+    ImageSystem::manageStorage();
     
-    // Check system health
-    if (!checkSystemHealth()) {
-        logError(ERR_SYSTEM_HEALTH, "Critical system health check failed");
-        shutdownPeripherals();
-        esp_deep_sleep_start();
-    }
-    
-    // Check radar with error handling
-    if (!check_radar()) {
-        logError(ERR_RADAR_TIMEOUT, "Radar communication timeout");
-    }
-
-    if (targetDetected) {
-        char filename[32];
-        if (capture_and_save(filename)) {
-            if (!transmit_image(filename)) {
-                logError(ERR_TRANSMISSION, "Failed to transmit image");
+    if(App::State::targetDetected) {
+        String filename;
+        if(ImageSystem::captureAndSave(filename)) {
+            if(LoRaTx::sendImage(filename)) {
+                App::State::lastActivity = millis();
             }
-            targetDetected = false;
-            lastActivityTime = millis();
-        } else {
-            logError(ERR_IMAGE_CAPTURE, "Failed to capture or save image");
         }
+        App::State::targetDetected = false;
     }
 
     // Power management
-    if (millis() - lastActivityTime > INACTIVITY_TIMEOUT) {
-        logDiagnostics(); // Final diagnostics before sleep
-        shutdownPeripherals();
-        esp_deep_sleep_start();
+    if(millis() - App::State::lastActivity > App::Config::INACTIVITY_TIMEOUT) {
+        Power::deepSleep();
     }
+    
+    Power::checkWatchdog();
 }
+// --------------------------------------------------
+// End of file
