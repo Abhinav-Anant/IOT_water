@@ -34,7 +34,7 @@ NTPClient timeClient(ntpUDP, "in.pool.ntp.org", 19800, 60000); // GMT+5:30
 Preferences preferences;
 
 void IRAM_ATTR pulseCounter() {
-  static unsigned long lastPulseTime = 0;
+  static unsigned long lastPulseTime = 10;
   unsigned long currentTime = millis();
   if (currentTime - lastPulseTime > 10) { // 10 ms debounce
     pulseCount++;
@@ -64,6 +64,8 @@ void setup() {
   // NTP Client
   timeClient.begin();
   timeClient.forceUpdate();
+
+  preferences.begin("waterSystem", false); // Initialization added
 }
 
 void connectToWiFi() {
@@ -164,11 +166,16 @@ void stopSystem() {
 }
 
 void checkFlowRate() {
-  if (millis() - lastFlowCheck >= flowInterval && motorRunning) {
+  static unsigned long lastCheckMillis = 0;
+  unsigned long currentMillis = millis();
+  
+  if (currentMillis - lastCheckMillis >= flowInterval && motorRunning) {
     noInterrupts();
-    flowRate = ((1000.0 / (millis() - lastFlowCheck)) * pulseCount) / calibrationFactor;
+    unsigned long elapsed = currentMillis - lastFlowCheck;
+    flowRate = ((1000.0 / elapsed) * pulseCount) / calibrationFactor;
     pulseCount = 0;
-    lastFlowCheck = millis();
+    lastFlowCheck = currentMillis;
+    lastCheckMillis = currentMillis; 
     interrupts();
 
     if (flowRate < flowThreshold) {
